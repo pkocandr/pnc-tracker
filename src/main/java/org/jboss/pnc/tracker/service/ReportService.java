@@ -1,0 +1,241 @@
+package org.jboss.pnc.tracker.service;
+
+import org.jboss.pnc.tracker.exception.ReportDataConflictException;
+import org.jboss.pnc.tracker.exception.ReportInvalidStateException;
+import org.jboss.pnc.tracker.exception.ReportNotFoundException;
+import org.jboss.pnc.tracker.model.DbTrackingEntry;
+import org.jboss.pnc.tracker.model.DbTrackingReport;
+import org.jboss.pnc.tracker.model.StoreEffect;
+import org.jboss.pnc.tracker.model.TrackingReportState;
+
+import java.util.List;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.transaction.Transactional;
+
+/**
+ * Service responsible for orchestrating tracking reports and their associated entries.
+ * <p>
+ * This service acts as the core business logic layer for the tracking functionality.
+ * Following a decoupled architectural pattern, it manages the relationship between
+ * {@code DbTrackingReport} and {@code DbTrackingEntry} dynamically using tracking identifiers
+ * rather than hardcoded bi-directional JPA object relationships. This prevents common
+ * ORM pitfalls such as {@code LazyInitializationException} and enhances overall performance.
+ * </p>
+ *
+ * @see DbTrackingReport
+ * @see DbTrackingEntry
+ */
+@ApplicationScoped
+public class ReportService {
+
+    private final Logger logger = LoggerFactory.getLogger(getClass());
+
+    /**
+     * Retrieves a tracking report by its unique key.
+     * <p>
+     * This method acts as the primary internal getter for business logic. If the report
+     * is not found in the database, it throws a domain-specific {@link ReportNotFoundException}.
+     * This exception is subsequently intercepted by the REST layer's exception mappers
+     * to return a standard HTTP 404 Not Found status to the client.
+     * </p>
+     *
+     * @param key the unique tracking key of the report to retrieve
+     * @return the matching {@link DbTrackingReport} instance
+     * @throws ReportNotFoundException if no tracking report exists with the specified key
+     */
+    public DbTrackingReport getReport(String trackingId) {
+        DbTrackingReport trackingRecord = DbTrackingReport.findByKey(trackingId);
+        if (trackingRecord == null) {
+            throw new ReportNotFoundException("Tracking report with ID %s was not found.", trackingId);
+        }
+        return trackingRecord;
+    }
+
+    /**
+     * Retrieves entries for a specified tracking report, optionally filtered by {@link StoreEffect}.
+     * <p>
+     * This method verifies the existence of the report before fetching the entries. If the report does not exist, a
+     * {@link ReportNotFoundException} is thrown.
+     * </p>
+     *
+     * @param trackingId the unique identifier of the report.
+     * @param effect the optional {@link StoreEffect} to filter by; pass {@code null} to retrieve all entries.
+     * @return a {@link List} of {@link DbTrackingEntry} entities associated with the report.
+     * @throws ReportNotFoundException if no report is found for the given {@code trackingId}.
+     */
+    public List<DbTrackingEntry> getEntriesDetached(String trackingId, StoreEffect effect) {
+        // 1. Check if the report exists to ensure 404 behaviour if missing
+        DbTrackingReport report = getReport(trackingId);
+
+        // Enforce state-based access control
+        if (report.state != TrackingReportState.IN_PROGRESS) {
+            throw new ReportInvalidStateException(
+                    "Cannot read entries for report: %s because its state is: %s.",
+                    trackingId,
+                    report.state);
+        }
+        // 2. Fetch the data using the optimized stateless approach
+        return DbTrackingEntry.getEntriesForReportDetached(trackingId, effect);
+    }
+
+    /**
+     * Seals an existing tracking report to prevent any further entries from being added.
+     * <p>
+     * This operation is idempotent. If the report is already in the {@link TrackingReportState#SEALED}
+     * state, the method logs a debug message and returns the report immediately without
+     * modifying the database. Otherwise, it transitions the report's state to {@code SEALED}
+     * and persists the changes.
+     * </p>
+     *
+     * @param trackingId the unique identifier of the tracking report to seal
+     * @return the sealed {@link DbTrackingReport} instance
+     * @throws ReportNotFoundException if no tracking report exists with the specified key (thrown via {@link #getReport(String)})
+     */
+    public DbTrackingReport sealReport(String trackingId) {
+        DbTrackingReport trackingRecord = getReport(trackingId);
+
+        if (trackingRecord.state == TrackingReportState.SEALED) {
+            logger.debug("Tracking report: {} already sealed! Returning sealed record.", trackingId);
+            return trackingRecord;
+        }
+        if (trackingRecord.state == TrackingReportState.CORRUPTED) {
+            throw new ReportDataConflictException(
+                    "Tracking report: {} is CORRUPTED, so it cannot be sealed!", trackingId);
+        }
+        logger.debug("Sealing record for: {}", trackingId);
+        trackingRecord.state = TrackingReportState.SEALED;
+        DbTrackingReport.persist(trackingRecord);
+
+        return trackingRecord;
+    }
+
+    /**
+     * Records a tracking entry (either an upload or a download) for the specified tracking report.
+     * <p>
+     * It executes a fast-path insertion within the active transaction and, if unsuccessful,
+     * initiates a deep validation path to diagnose the underlying report state.
+     * </p>
+     *
+     * @param entry the transient tracking entry to persist
+     * @throws ReportNotFoundException if the report does not exist
+     * @throws ReportInvalidStateException if the report is sealed or corrupted
+     */
+    @Transactional
+    public void trackEntry(DbTrackingEntry entry) {
+        // ultra-fast conditional persist
+        boolean success = entry.persistIfActive();
+
+        // if it fails, we analyse the reason (slow path)
+        if (!success) {
+            validateReportStatus(entry);
+        }
+    }
+
+    /**
+     * Validates the report status and throws domain-specific service exceptions.
+     */
+    private void validateReportStatus(DbTrackingEntry entry) {
+        DbTrackingReport report = getReport(entry.trackingId);
+        if (report == null) {
+            throw new ReportNotFoundException("Tracking report not found: %s", entry.trackingId);
+        }
+
+        if (report.state == TrackingReportState.SEALED) {
+            throw new ReportInvalidStateException("Tracking report %s is sealed.", entry.trackingId);
+        }
+
+        if (report.state == TrackingReportState.CORRUPTED) {
+            throw new ReportInvalidStateException("Tracking report %s is corrupted.", entry.trackingId);
+        }
+
+        if (report.state == TrackingReportState.IN_PROGRESS) {
+            logger.debug(
+                    "Entry for path {} in repository {} already exists in report {}. Skipping duplicate.",
+                    entry.path,
+                    entry.repositoryId,
+                    entry.trackingId);
+        }
+    }
+
+    /**
+     * Initialises a new tracking report.
+     * <p>
+     * If a report with the given ID does not exist, a new one is created in {@link TrackingReportState#IN_PROGRESS}.
+     * If it exists and is in {@link TrackingReportState#IN_PROGRESS} with no entries, the operation is skipped.
+     * If it exists but contains entries, or is in a terminal state (SEALED, CORRUPTED), a conflict exception is thrown.
+     * </p>
+     *
+     * @param trackingId the unique identifier of the report to initialise.
+     * @throws ReportDataConflictException if the report exists with entries or is in an invalid state.
+     */
+    @Transactional
+    public void initReport(String trackingId) {
+        DbTrackingReport existingReport = DbTrackingReport.findByKey(trackingId);
+
+        if (existingReport == null) {
+            DbTrackingReport newReport = new DbTrackingReport();
+            newReport.trackingId = trackingId;
+            newReport.state = TrackingReportState.IN_PROGRESS;
+            newReport.persist();
+            logger.info("New tracking report {} initialized.", trackingId);
+        } else {
+            // Handle existing report logic
+            if (existingReport.state != TrackingReportState.IN_PROGRESS) {
+                throw new ReportDataConflictException("Report %s is in terminal state: %s",
+                        trackingId, existingReport.state);
+            }
+
+            if (DbTrackingReport.hasEntries(trackingId)) {
+                throw new ReportDataConflictException("Report %s is already active and contains entries.",
+                        trackingId);
+            }
+
+            logger.debug("Report {} already exists and is empty. Skipping initialization.", trackingId);
+        }
+    }
+
+    /**
+     * Retrieves a list of tracking report identifiers, optionally filtered by state.
+     * <p>
+     * If the provided {@code state} is {@code null}, all tracking identifiers in the system are returned. Otherwise,
+     * only identifiers for reports matching the specified state are retrieved.
+     * </p>
+     *
+     * @param state the {@link TrackingReportState} to filter by, or {@code null} to retrieve all available identifiers.
+     * @return a {@link List} of tracking identifier strings.
+     */
+    public List<String> getTrackingIds(TrackingReportState state) {
+        if (state == null) {
+            return DbTrackingReport.findAllKeys();
+        } else {
+            return DbTrackingReport.findKeysByType(state);
+        }
+    }
+
+    /**
+     * Deletes a tracking report and all its associated entries.
+     * <p>
+     * This operation is idempotent: if the report does not exist, the method completes
+     * successfully without performing any action, effectively fulfilling the intent
+     * of ensuring the report is cleared.
+     * </p>
+     *
+     * @param trackingId the unique identifier of the report to clear
+     */
+    @Transactional
+    public void clearReport(String trackingId) {
+        DbTrackingReport report = getReport(trackingId);
+
+        if (report == null) {
+            logger.debug("Attempted to clear non-existent tracking report: %s. Skipping.", trackingId);
+        } else {
+            report.delete();
+            logger.info("Report %s and all its entries have been cleared.", trackingId);
+        }
+    }
+
+}

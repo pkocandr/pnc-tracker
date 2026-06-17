@@ -1,0 +1,25 @@
+package org.jboss.pnc.tracker.exception;
+
+/**
+ * Thrown when an entry cannot be persisted due to a database data conflict
+ * while the report is active.
+ */
+public class ReportDataConflictException extends TrackingServiceException {
+
+    public ReportDataConflictException(String message, Object... params) {
+        super(message, params);
+    }
+
+    public ReportDataConflictException(String message, Throwable cause, Object... params) {
+        super(message, cause, params);
+    }
+
+    public ReportDataConflictException(int status, String message, Object... params) {
+        super(status, message, params);
+    }
+
+    public ReportDataConflictException(int status, String message, Throwable cause, Object... params) {
+        super(status, message, cause, params);
+    }
+
+}
