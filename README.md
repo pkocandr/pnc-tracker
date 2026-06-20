@@ -61,4 +61,4 @@ The service utilizes the modern Quarkus REST extension (reactive JAX-RS engine) 
 
 ### Panache (PostgreSQL)
 
-Data persistence is handled by Hibernate ORM with Panache, using decoupled entities (DbTrackingReport and DbTrackingEntry) linked dynamically by IDs to maximize performance and avoid JPA relational pitfalls.
+Data persistence is handled by Hibernate ORM with Panache, using decoupled entities (`DbTrackingReport` and `DbTrackedEntry`) linked dynamically by IDs to maximize performance and avoid JPA relational pitfalls.

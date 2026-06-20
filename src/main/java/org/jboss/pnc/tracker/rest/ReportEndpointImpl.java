@@ -22,7 +22,7 @@ import org.jboss.pnc.api.tracker.dto.TrackedArtifact;
 import org.jboss.pnc.api.tracker.dto.TrackedEntry;
 import org.jboss.pnc.api.tracker.dto.TrackingReport;
 import org.jboss.pnc.api.tracker.rest.ReportEndpoint;
-import org.jboss.pnc.tracker.model.DbTrackingEntry;
+import org.jboss.pnc.tracker.model.DbTrackedEntry;
 import org.jboss.pnc.tracker.model.DbTrackingReport;
 import org.jboss.pnc.tracker.model.StoreEffect;
 import org.jboss.pnc.tracker.model.TrackingReportState;
@@ -81,7 +81,7 @@ public class ReportEndpointImpl implements ReportEndpoint {
 
     @Override
     public void trackUpload(String trackingId, TrackUploadRequest request) {
-        DbTrackingEntry entry = mapToEntity(trackingId, request);
+        DbTrackedEntry entry = mapToEntity(trackingId, request);
         entry.storeEffect = StoreEffect.UPLOAD;
 
         reportService.trackEntry(entry);
@@ -89,7 +89,7 @@ public class ReportEndpointImpl implements ReportEndpoint {
 
     @Override
     public void trackDownload(String trackingId, TrackDownloadRequest request) {
-        DbTrackingEntry entry = mapToEntity(trackingId, request);
+        DbTrackedEntry entry = mapToEntity(trackingId, request);
         entry.originUrl = request.getOriginUrl();
         entry.storeEffect = StoreEffect.DOWNLOAD;
 
@@ -103,8 +103,8 @@ public class ReportEndpointImpl implements ReportEndpoint {
      * @param request the request
      * @return converted entity without the parent
      */
-    private DbTrackingEntry mapToEntity(String trackingId, TrackedArtifact request) {
-        DbTrackingEntry entry = new DbTrackingEntry();
+    private DbTrackedEntry mapToEntity(String trackingId, TrackedArtifact request) {
+        DbTrackedEntry entry = new DbTrackedEntry();
         entry.trackingId = trackingId;
         entry.repositoryId = request.getRepoId().getPath();
         entry.path = request.getPath();
@@ -129,11 +129,11 @@ public class ReportEndpointImpl implements ReportEndpoint {
         if (report.state != TrackingReportState.SEALED) {
             throw new WebApplicationException("Report is not sealed", Response.Status.CONFLICT);
         }
-        List<DbTrackingEntry> entries = reportService.getEntriesDetached(trackingId, null);
+        List<DbTrackedEntry> entries = reportService.getEntriesDetached(trackingId, null);
         return buildDto(trackingId, entries);
     }
 
-    private TrackingReport buildDto(String trackingId, List<DbTrackingEntry> entries) {
+    private TrackingReport buildDto(String trackingId, List<DbTrackedEntry> entries) {
         TrackingReport dto = TrackingReport.builder()
                 .trackingID(trackingId)
                 .uploads(entries.stream()
@@ -149,7 +149,7 @@ public class ReportEndpointImpl implements ReportEndpoint {
         return dto;
     }
 
-    private TrackedEntry toEntryDto(DbTrackingEntry entry) {
+    private TrackedEntry toEntryDto(DbTrackedEntry entry) {
         return TrackedEntry.builder()
                 .repoId(RepositoryId.parse(entry.repositoryId))
                 .path(entry.path)

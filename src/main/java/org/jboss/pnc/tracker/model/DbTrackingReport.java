@@ -93,7 +93,7 @@ public class DbTrackingReport extends PanacheEntityBase {
      */
     public static boolean hasEntries(String trackingId) {
         return getEntityManager()
-                .createQuery("SELECT COUNT(e) FROM DbTrackingEntry e WHERE e.trackingRecord.trackingId = :id", Long.class)
+                .createQuery("SELECT COUNT(e) FROM DbTrackedEntry e WHERE e.trackingRecord.trackingId = :id", Long.class)
                 .setParameter("id", trackingId)
                 .getSingleResult() > 0;
     }

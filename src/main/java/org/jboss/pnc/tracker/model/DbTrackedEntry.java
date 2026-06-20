@@ -32,13 +32,13 @@ import jakarta.persistence.UniqueConstraint;
 
 @Entity
 @Table(
-        name = "tracking_entry",
+        name = "tracked_entry",
         indexes = { @Index(name = "idx_timestamps", columnList = "timestamp"),
                 @Index(name = "idx_store_path_effect", columnList = "store_key,path,store_effect")},
         uniqueConstraints = @UniqueConstraint(
                 name = "uq_build_repo_operation_path",
                 columnNames = { "tracking_id", "repository_id", "store_effect", "path" }))
-public class DbTrackingEntry extends PanacheEntity {
+public class DbTrackedEntry extends PanacheEntity {
 
     @Column(
             name = "tracking_id",
@@ -73,10 +73,10 @@ public class DbTrackingEntry extends PanacheEntity {
     @Column(name = "access_timestamp")
     public LocalDateTime timestamp;
 
-    public DbTrackingEntry() {
+    public DbTrackedEntry() {
     }
 
-    public DbTrackingEntry(
+    public DbTrackedEntry(
             String trackingId,
             String repositoryId,
             String path,
@@ -108,7 +108,7 @@ public class DbTrackingEntry extends PanacheEntity {
      */
     public boolean persistIfActive() {
         return getEntityManager().createNativeQuery("""
-            INSERT INTO tracking_entry
+            INSERT INTO tracked_entry
                 (tracking_id, repository_id, path, origin_url, store_effect, md5, sha1, sha256, size, timestamp)
             SELECT
                 r.trackingId, :repositoryId, :path, :originUrl, :storeEffect, :md5, :sha1, :sha256, :size, :timestamp
@@ -142,18 +142,18 @@ public class DbTrackingEntry extends PanacheEntity {
      *
      * @param trackingId the unique identifier of the report.
      * @param effect the optional {@link StoreEffect} to filter by; pass {@code null} to retrieve all.
-     * @return a {@link List} of detached {@link DbTrackingEntry} entities.
+     * @return a {@link List} of detached {@link DbTrackedEntry} entities.
      */
-    public static List<DbTrackingEntry> getEntriesForReportDetached(String trackingId, StoreEffect effect) {
-        String hql = "FROM DbTrackingEntry e WHERE e.trackingRecord.trackingId = :id";
+    public static List<DbTrackedEntry> getEntriesForReportDetached(String trackingId, StoreEffect effect) {
+        String hql = "FROM DbTrackedEntry e WHERE e.trackingId = :id";
         if (effect != null) {
             hql += " AND e.storeEffect = :effect";
         }
 
-        Query<DbTrackingEntry> query = Panache.getEntityManager().unwrap(Session.class)
+        Query<DbTrackedEntry> query = Panache.getEntityManager().unwrap(Session.class)
                 .getSessionFactory()
                 .openStatelessSession()
-                .createQuery(hql, DbTrackingEntry.class)
+                .createQuery(hql, DbTrackedEntry.class)
                 .setParameter("id", trackingId);
 
         if (effect != null) {

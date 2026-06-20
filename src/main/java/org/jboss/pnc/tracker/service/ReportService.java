@@ -3,7 +3,7 @@ package org.jboss.pnc.tracker.service;
 import org.jboss.pnc.tracker.exception.ReportDataConflictException;
 import org.jboss.pnc.tracker.exception.ReportInvalidStateException;
 import org.jboss.pnc.tracker.exception.ReportNotFoundException;
-import org.jboss.pnc.tracker.model.DbTrackingEntry;
+import org.jboss.pnc.tracker.model.DbTrackedEntry;
 import org.jboss.pnc.tracker.model.DbTrackingReport;
 import org.jboss.pnc.tracker.model.StoreEffect;
 import org.jboss.pnc.tracker.model.TrackingReportState;
@@ -21,13 +21,13 @@ import jakarta.transaction.Transactional;
  * <p>
  * This service acts as the core business logic layer for the tracking functionality.
  * Following a decoupled architectural pattern, it manages the relationship between
- * {@code DbTrackingReport} and {@code DbTrackingEntry} dynamically using tracking identifiers
+ * {@code DbTrackingReport} and {@code DbTrackedEntry} dynamically using tracking identifiers
  * rather than hardcoded bi-directional JPA object relationships. This prevents common
  * ORM pitfalls such as {@code LazyInitializationException} and enhances overall performance.
  * </p>
  *
  * @see DbTrackingReport
- * @see DbTrackingEntry
+ * @see DbTrackedEntry
  */
 @ApplicationScoped
 public class ReportService {
@@ -64,10 +64,10 @@ public class ReportService {
      *
      * @param trackingId the unique identifier of the report.
      * @param effect the optional {@link StoreEffect} to filter by; pass {@code null} to retrieve all entries.
-     * @return a {@link List} of {@link DbTrackingEntry} entities associated with the report.
+     * @return a {@link List} of {@link DbTrackedEntry} entities associated with the report.
      * @throws ReportNotFoundException if no report is found for the given {@code trackingId}.
      */
-    public List<DbTrackingEntry> getEntriesDetached(String trackingId, StoreEffect effect) {
+    public List<DbTrackedEntry> getEntriesDetached(String trackingId, StoreEffect effect) {
         // 1. Check if the report exists to ensure 404 behaviour if missing
         DbTrackingReport report = getReport(trackingId);
 
@@ -79,7 +79,7 @@ public class ReportService {
                     report.state);
         }
         // 2. Fetch the data using the optimized stateless approach
-        return DbTrackingEntry.getEntriesForReportDetached(trackingId, effect);
+        return DbTrackedEntry.getEntriesForReportDetached(trackingId, effect);
     }
 
     /**
@@ -125,7 +125,7 @@ public class ReportService {
      * @throws ReportInvalidStateException if the report is sealed or corrupted
      */
     @Transactional
-    public void trackEntry(DbTrackingEntry entry) {
+    public void trackEntry(DbTrackedEntry entry) {
         // ultra-fast conditional persist
         boolean success = entry.persistIfActive();
 
@@ -138,7 +138,7 @@ public class ReportService {
     /**
      * Validates the report status and throws domain-specific service exceptions.
      */
-    private void validateReportStatus(DbTrackingEntry entry) {
+    private void validateReportStatus(DbTrackedEntry entry) {
         DbTrackingReport report = getReport(entry.trackingId);
         if (report == null) {
             throw new ReportNotFoundException("Tracking report not found: %s", entry.trackingId);
