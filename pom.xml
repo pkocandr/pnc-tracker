@@ -44,6 +44,7 @@
 
         <apiVersion>1</apiVersion>
         <pnc-api.version>3.6.0-SNAPSHOT</pnc-api.version>
+        <artifactory-client.version>2.22.0</artifactory-client.version>
 
         <jib.base.image.version>1.24-7</jib.base.image.version>
         <jib.base.image.digest>sha256:5ee73448f86838eecff13f80512b49ff6ea0fa21aaf5d1fa8afe3402fc965e9e</jib.base.image.digest>
@@ -57,6 +58,12 @@
                 <version>${quarkus.platform.version}</version>
                 <type>pom</type>
                 <scope>import</scope>
+            </dependency>
+
+            <dependency>
+                <groupId>org.jboss.pnc.artifactory-client</groupId>
+                <artifactId>artifactory-java-client-services</artifactId>
+                <version>${artifactory-client.version}</version>
             </dependency>
         </dependencies>
     </dependencyManagement>
@@ -121,6 +128,11 @@
         <dependency>
             <groupId>io.quarkus</groupId>
             <artifactId>quarkus-micrometer-opentelemetry</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>org.jboss.pnc.artifactory-client</groupId>
+            <artifactId>artifactory-java-client-services</artifactId>
         </dependency>
     </dependencies>
 

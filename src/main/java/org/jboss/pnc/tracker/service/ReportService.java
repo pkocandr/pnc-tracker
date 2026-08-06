@@ -142,6 +142,7 @@ public class ReportService {
             throw new ReportDataConflictException(
                     "Tracking report: {} is CORRUPTED, so it cannot be sealed!", trackingId);
         }
+
         doSealReport(trackingReport);
 
         return trackingReport;
