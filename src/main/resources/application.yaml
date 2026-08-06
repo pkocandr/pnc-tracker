@@ -30,7 +30,12 @@ quarkus:
       artifact-id: pnc-api
   swagger-ui:
     always-include: true
-
+tracker:
+  artifactory:
+    pull-data: false
+    url: https://localhost:8443/
+    token: dummy
+    
 "%dev":
   quarkus:
     kubernetes-config:

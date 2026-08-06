@@ -103,10 +103,11 @@ public class DbTrackedEntry extends PanacheEntity {
             SELECT
                 r.reportId, :repositoryId, :path, :originUrl, :storeEffect, :md5, :sha1, :sha256, :size, :timestamp
             FROM tracking_report r
-            WHERE r.id = :reportId AND r.sealed = false
+            WHERE r.id = :reportId AND r.state = :reportState
             ON CONFLICT ON CONSTRAINT uq_build_repo_operation_path DO NOTHING
             """)
             .setParameter("reportId", this.reportId)
+            .setParameter("reportState", DbTrackingReportState.IN_PROGRESS.getDbCode())
             .setParameter("repositoryId", this.repositoryId)
             .setParameter("path", this.path)
             .setParameter("originUrl", this.originUrl)
