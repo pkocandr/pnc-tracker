@@ -23,7 +23,7 @@ public class DbRepository extends PanacheEntity {
     public String project;
 
     /** The specific name of the repository. */
-    @Column(name = "project", length = 32)
+    @Column(name = "name", length = 32)
     public String name;
 
     /** The type of packages managed by this repository. */
