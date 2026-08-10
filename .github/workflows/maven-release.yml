@@ -8,6 +8,7 @@ on:
         type: string
         # default has to be a static string, no variables allowed
         default: ''
+      quarkus_jib_image: true
 
 jobs:
     call-release-job:
