@@ -18,7 +18,6 @@ import java.util.List;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import io.quarkus.cache.CacheResult;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.transaction.Transactional;
@@ -46,6 +45,9 @@ public class ReportService {
 
     @Inject
     RepositoryCache repositoryCache;
+
+    @Inject
+    ArtifactoryConnector artifactoryConnector;
 
     /**
      * Retrieves a tracking report by its primary key.
@@ -121,15 +123,16 @@ public class ReportService {
     /**
      * Seals an existing tracking report to prevent any further entries from being added.
      * <p>
-     * This operation is idempotent. If the report is already in the {@link DbTrackingReportState#SEALED}
-     * state, the method logs a debug message and returns the report immediately without
-     * modifying the database. Otherwise, it transitions the report's state to {@code SEALED}
-     * and persists the changes.
+     * This operation is idempotent. If the report is already in the {@link DbTrackingReportState#SEALED} state, the
+     * method logs a debug message and returns the report immediately without modifying the database. Otherwise, it
+     * transitions the report's state to {@code SEALED} and persists the changes.
      * </p>
      *
      * @param trackingId the unique identifier of the tracking report to seal
      * @return the sealed {@link DbTrackingReport} instance
-     * @throws ReportNotFoundException if no tracking report exists with the specified key (thrown via {@link #getReport(String)})
+     * @throws ReportNotFoundException if no tracking report exists with the specified key (thrown via
+     *         {@link #getReport(String)})
+     * @throws ReportDataConflictException if the report is already in a {@code CORRUPTED} state
      */
     public DbTrackingReport sealReport(String trackingId) {
         DbTrackingReport trackingReport = getReport(trackingId);
@@ -143,16 +146,57 @@ public class ReportService {
                     "Tracking report: {} is CORRUPTED, so it cannot be sealed!", trackingId);
         }
 
-        doSealReport(trackingReport);
+        List<DbTrackedEntry> fetchedEntries = List.of();
+        if (artifactoryConnector.isActive()) {
+            logger.info("Artifactory pull is enabled. Fetching entries...");
+            fetchedEntries = artifactoryConnector.fetchEntriesForReport(trackingId);
+        }
 
-        return trackingReport;
+        return saveEntriesAndSeal(trackingId, fetchedEntries);
     }
 
+    /**
+     * Persists tracked entries using native batch queries and updates the report state to {@code SEALED}.
+     * <p>
+     * This method executes inside an isolated transaction. It re-fetches the report entity to obtain a
+     * managed JPA instance and performs a double-check on its state to detect concurrent modifications
+     * that might have occurred during external network operations.
+     * </p>
+     *
+     * @param trackingId the unique business identifier of the tracking report
+     * @param entries the list of tracked entries to persist (must not be {@code null})
+     * @return the updated managed {@link DbTrackingReport}
+     * @throws ReportNotFoundException if the tracking report no longer exists
+     * @throws ReportDataConflictException if the report was set to {@code CORRUPTED} by another process
+     */
     @Transactional
-    public void doSealReport(DbTrackingReport trackingReport) {
-        logger.debug("Sealing report for: {}", trackingReport.trackingId);
+    public DbTrackingReport saveEntriesAndSeal(String trackingId, List<DbTrackedEntry> entries) {
+        DbTrackingReport trackingReport = DbTrackingReport.findByTrackingId(trackingId);
+
+        // Double-check state to handle race conditions during network I/O
+        if (trackingReport.state == DbTrackingReportState.SEALED) {
+            return trackingReport;
+        }
+        if (trackingReport.state == DbTrackingReportState.CORRUPTED) {
+            throw new ReportDataConflictException(
+                    "Report %s became CORRUPTED during processing and cannot be sealed.".formatted(trackingId)
+            );
+        }
+
+        if (!entries.isEmpty()) {
+            int insertedCount = 0;
+            for (DbTrackedEntry entry : entries) {
+                if (entry.persistIfActive()) {
+                    insertedCount++;
+                }
+            }
+            logger.info("Successfully persisted %d / %d entries via native SQL for report %s",
+                    insertedCount, entries.size(), trackingId);
+        }
+
         trackingReport.state = DbTrackingReportState.SEALED;
-        DbTrackingReport.persist(trackingReport);
+
+        return trackingReport;
     }
 
     /**

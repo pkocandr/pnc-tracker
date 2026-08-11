@@ -5,7 +5,11 @@
 package org.jboss.pnc.tracker.service;
 
 import org.jboss.pnc.tracker.model.DbPackageType;
+import org.jboss.pnc.tracker.model.DbTrackedEntry;
 
+import java.util.List;
+
+import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.jfrog.artifactory.client.Artifactory;
 import org.jfrog.artifactory.client.RepositoryHandle;
 import org.jfrog.artifactory.client.model.PackageType;
@@ -20,6 +24,10 @@ public class ArtifactoryConnector {
 
     @Inject
     Logger log;
+
+    @Inject
+    @ConfigProperty(name = "tracker.artifactory.pull-data", defaultValue = "false")
+    boolean active;
 
     @Inject
     private Artifactory artifactory;
@@ -87,6 +95,22 @@ public class ArtifactoryConnector {
                             typeName,
                             repoName));
         };
+    }
+
+    /**
+     * Queries Artifactory using AQL to fetch all tracked artifact downloads and uploads
+     * associated with the specified tracking ID, converting them into {@link DbTrackedEntry} objects.
+     *
+     * @param trackingId the business tracking identifier (build content ID)
+     * @return list of converted {@link DbTrackedEntry} entities ready for batch persistence
+     */
+    public List<DbTrackedEntry> fetchEntriesForReport(String trackingId) {
+        // TODO Auto-generated method stub
+        return null;
+    }
+
+    public boolean isActive() {
+        return active;
     }
 
 }
