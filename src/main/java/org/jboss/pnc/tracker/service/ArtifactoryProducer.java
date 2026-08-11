@@ -6,6 +6,8 @@ package org.jboss.pnc.tracker.service;
 
 import org.jboss.pnc.tracker.exception.TrackerException;
 
+import java.util.Optional;
+
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.jfrog.artifactory.client.Artifactory;
 import org.jfrog.artifactory.client.ArtifactoryClientBuilder;
@@ -21,34 +23,54 @@ public class ArtifactoryProducer {
 
     private static final Logger logger = LoggerFactory.getLogger(ArtifactoryProducer.class);
 
-    private final Artifactory artifactory;
+    @ConfigProperty(name = "tracker.artifactory.url")
+    Optional<String> url;
 
-    public ArtifactoryProducer(
-        @ConfigProperty(name = "tracker.artifactory.url") String url,
-        @ConfigProperty(name = "tracker.artifactory.access-token") String accessToken)
-        throws TrackerException {
-        try {
-            logger.info("Creating artifactory connection with url {}", url);
-            artifactory = ArtifactoryClientBuilder.create()
-                    .setAccessToken(accessToken)
-                    .setUrl(url)
-                    .build();
-            logger.info(
-                    "Running against Artifactory version {}",
-                    artifactory.system().version().getVersion());
-        } catch (Exception e) {
-            throw new TrackerException("Fatal error contacting artifactory", e);
-        }
-    }
+    @ConfigProperty(name = "tracker.artifactory.access-token")
+    Optional<String> accessToken;
+
+    private volatile Artifactory artifactory;
 
     @Produces
-    public Artifactory produce() {
-        return artifactory;
+    @ApplicationScoped
+    public Artifactory produce() throws TrackerException {
+        if (url.isEmpty() || url.get().isBlank() || accessToken.isEmpty() || accessToken.get().isBlank()) {
+            throw new IllegalStateException(
+                    "Artifactory is not configured. Please set 'tracker.artifactory.url' and 'tracker.artifactory.access-token'."
+            );
+        }
+
+        String artifactoryUrl = url.get();
+        logger.info("Creating Artifactory client connection to {}", artifactoryUrl);
+
+        try {
+            Artifactory client = ArtifactoryClientBuilder.create()
+                    .setAccessToken(accessToken.get())
+                    .setUrl(artifactoryUrl)
+                    .build();
+
+            try {
+                logger.info("Running against Artifactory version: {}", client.system().version().getVersion());
+            } catch (Exception e) {
+                logger.warn("Artifactory client created, but version check failed: {}", e.getMessage());
+            }
+
+            this.artifactory = client;
+            return client;
+        } catch (Exception e) {
+            throw new IllegalStateException("Failed to initialize Artifactory client for URL: " + artifactoryUrl, e);
+        }
     }
 
     @PreDestroy
     public void cleanup() {
-        logger.warn("Closing artifactory connection");
-        artifactory.close();
+        if (artifactory != null) {
+            logger.info("Closing Artifactory client connection");
+            try {
+                artifactory.close();
+            } catch (Exception e) {
+                logger.warn("Error closing Artifactory client: {}", e.getMessage());
+            }
+        }
     }
 }

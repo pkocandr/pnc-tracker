@@ -5,15 +5,25 @@
 package org.jboss.pnc.tracker.service;
 
 import org.jboss.pnc.tracker.model.DbPackageType;
+import org.jboss.pnc.tracker.model.DbStoreEffect;
 import org.jboss.pnc.tracker.model.DbTrackedEntry;
 
+import java.time.Instant;
+import java.time.LocalDateTime;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.jfrog.artifactory.client.Artifactory;
 import org.jfrog.artifactory.client.RepositoryHandle;
+import org.jfrog.artifactory.client.model.AqlItem;
+import org.jfrog.artifactory.client.aql.FileSpecBuilder;
 import org.jfrog.artifactory.client.model.PackageType;
 import org.jfrog.artifactory.client.model.Repository;
+import org.jfrog.filespecs.FileSpec;
 import org.jboss.logging.Logger;
 
 import jakarta.enterprise.context.ApplicationScoped;
@@ -22,15 +32,28 @@ import jakarta.inject.Inject;
 @ApplicationScoped
 public class ArtifactoryConnector {
 
-    @Inject
-    Logger log;
+    private static final String BUILD_PROPERTY_PREFIX = "pnc.";
+
+    /** Safety ceiling — no single build should exceed this. */
+    private static final int AQL_RESULT_LIMIT = 50000;
 
     @Inject
+    Logger logger;
+
     @ConfigProperty(name = "tracker.artifactory.pull-data", defaultValue = "false")
     boolean active;
 
+    @ConfigProperty(name = "tracker.artifactory.project")
+    Optional<String> artifactoryProject;
+
     @Inject
     private Artifactory artifactory;
+
+    @Inject
+    ReportCache reportCache;
+
+    @Inject
+    RepositoryCache repositoryCache;
 
     /**
      * Fetches the package type of a repository from Artifactory based on its project and name.
@@ -69,7 +92,7 @@ public class ArtifactoryConnector {
             return mapToDbPackageType(artifactoryType, repoName);
 
         } catch (Exception e) {
-            log.errorf("Failed to fetch or map package type for repo %s: %s", repoName, e.getMessage());
+            logger.errorf("Failed to fetch or map package type for repo %s: %s", repoName, e.getMessage());
             // Fail fast: Re-throw or wrap in runtime exception to abort tracking
             if (e instanceof RuntimeException runtimeException) {
                 throw runtimeException;
@@ -105,8 +128,196 @@ public class ArtifactoryConnector {
      * @return list of converted {@link DbTrackedEntry} entities ready for batch persistence
      */
     public List<DbTrackedEntry> fetchEntriesForReport(String trackingId) {
-        // TODO Auto-generated method stub
-        return null;
+        if (!active) {
+            logger.debugf("Artifactory integration is disabled. Skipping fetch for tracking ID: %s", trackingId);
+            return List.of();
+        }
+
+        String trackPropName = BUILD_PROPERTY_PREFIX + trackingId;
+        logger.infof("Querying Artifactory AQL for tracking report: %s (property: %s)", trackingId, trackPropName);
+
+        try {
+            // Build single AQL FileSpec search query combining build repo and shared repos
+            FileSpec spec = new FileSpec();
+            spec = new FileSpecBuilder()
+                    .item("type", "file")
+                    .match("repo", artifactoryProject + "-*")
+                    .eq("property.key", trackPropName)
+                    .include(
+                            "name",
+                            "repo",
+                            "path",
+                            "size",
+                            "actual_sha1",
+                            "actual_md5",
+                            "sha256",
+                            // Note that searching for a property also acts as a filter and excludes those
+                            // without this property hence the second FileGroup search below to find the
+                            // uploads that don't have this property.
+                            "@jf.origin.remote.path")
+                    .limit(AQL_RESULT_LIMIT)
+                    .addToFileSpec(spec);
+
+            spec = new FileSpecBuilder()
+                    .item("type", "file")
+                    .match("repo", artifactoryProject + "-*-" + trackingId)
+                    .eq("property.key", trackPropName)
+                    .include("name", "repo", "path", "size", "actual_sha1", "actual_md5", "sha256")
+                    // TODO: Handle pagination
+                    .limit(AQL_RESULT_LIMIT)
+                    .addToFileSpec(spec);
+
+            List<AqlItem> items = artifactory.searches().artifactsByFileSpec(spec);
+            logger.debugf("AQL query returned %d items for tracking ID %s", items.size(), trackingId);
+
+            List<DbTrackedEntry> entries = new ArrayList<>(items.size());
+
+            for (AqlItem item : items) {
+                try {
+                    DbTrackedEntry entry = convertAqlItemToEntity(item, trackingId, trackPropName);
+                    entries.add(entry);
+                } catch (Exception e) {
+                    logger.warnf("Failed to convert AqlItem (%s/%s): %s", item.getRepo(), item.getName(), e.getMessage());
+                }
+            }
+
+            logger.infof("Successfully fetched and converted %d entries for tracking ID: %s", entries.size(), trackingId);
+            return entries;
+
+        } catch (Exception e) {
+            logger.errorf(e, "Failed to fetch entries from Artifactory for tracking ID: %s", trackingId);
+            throw new IllegalStateException("Failed to retrieve tracking report from Artifactory for: " + trackingId, e);
+        }
+    }
+    /**
+     * Converts a single {@link AqlItem} returned by Artifactory AQL into a {@link DbTrackedEntry}.
+     */
+    private DbTrackedEntry convertAqlItemToEntity(AqlItem item, String trackingId, String trackPropName) {
+        String repoKey = item.getRepo();
+        String project = artifactoryProject.orElseThrow(() ->
+            new IllegalStateException("tracker.artifactory.project must be set when pull-data is enabled")
+        );
+        // Strip project prefix from repoKey to get clean repository name
+        // e.g., "pnc-mvn-build-123" -> "mvn-build-123"
+        String repoName = repoKey;
+        if (repoKey.startsWith(artifactoryProject + "-")) {
+            repoName = repoKey.substring(project.length() + 1);
+        }
+
+        // Get or automatically resolve/create DB repository ID via cache
+        Long repositoryId = repositoryCache.getOrCreateRepositoryId(project, repoName);
+
+        // Classify effect: If repoKey contains build/tracking ID -> UPLOAD, otherwise -> DOWNLOAD
+        DbStoreEffect storeEffect = repoKey.contains(trackingId) ? DbStoreEffect.UPLOAD : DbStoreEffect.DOWNLOAD;
+
+        // Construct normalized relative path
+        String path = normalizePath(item.getPath(), item.getName());
+
+        DbTrackedEntry entry = new DbTrackedEntry();
+        entry.reportId = reportCache.getReportId(trackingId);
+        entry.repositoryId = repositoryId;
+        entry.path = path;
+        entry.originUrl = extractOriginUrl(item);
+        entry.storeEffect = storeEffect;
+        entry.md5 = item.getActualMd5();
+        entry.sha1 = item.getActualSha1();
+        entry.sha256 = item.getSha256();
+        entry.size = item.getSize();
+        entry.timestamp = extractTimestamp(item, trackPropName);
+
+        return entry;
+    }
+
+    /**
+     * Extracts and parses the timestamp from the property matching the specified tracking property name.
+     * <p>
+     * If the property is absent or cannot be parsed, the method falls back to the creation timestamp of the item. If
+     * the creation timestamp is also missing, the current system time is used as a final fallback.
+     * </p>
+     *
+     * @param item the {@link AqlItem} containing the metadata and properties
+     * @param trackPropName the name of the tracking property to look for
+     * @return the resolved {@link LocalDateTime}
+     */
+    private LocalDateTime extractTimestamp(AqlItem item, String trackPropName) {
+        if (item.getProperties() == null) {
+            return fallbackTimestamp(item);
+        }
+
+        String rawValue = item.getProperties().stream()
+                .filter(p -> trackPropName.equalsIgnoreCase(p.getkey()))
+                .map(AqlItem.Property::getValue)
+                .filter(v -> v != null && !v.isBlank())
+                .findFirst()
+                .orElse(null);
+
+        if (rawValue == null) {
+            return fallbackTimestamp(item);
+        }
+
+        try {
+            // Attempt 1: Epoch timestamp (milliseconds or seconds)
+            if (rawValue.matches("\\d+")) {
+                long epoch = Long.parseLong(rawValue);
+                if (epoch < 10_000_000_000L) {
+                    epoch *= 1000; // Convert seconds to milliseconds
+                }
+                return Instant.ofEpochMilli(epoch)
+                        .atZone(ZoneId.systemDefault())
+                        .toLocalDateTime();
+            }
+
+            // Attempt 2: ISO-8601 formatted date-time
+            return LocalDateTime.parse(rawValue, DateTimeFormatter.ISO_DATE_TIME);
+
+        } catch (Exception e) {
+            logger.warnf("Failed to parse timestamp property '%s' (value: '%s'): %s", trackPropName, rawValue, e.getMessage());
+            return fallbackTimestamp(item);
+        }
+    }
+
+    /**
+     * Fallback timestamp strategy if property is absent or unparseable.
+     */
+    private LocalDateTime fallbackTimestamp(AqlItem item) {
+        if (item.getCreated() != null) { //
+            return item.getCreated().toInstant()
+                    .atZone(ZoneId.systemDefault())
+                    .toLocalDateTime();
+        }
+        return LocalDateTime.now();
+    }
+
+    /**
+     * Normalizes directory path and filename returned by AQL.
+     */
+    private String normalizePath(String rawDirectory, String fileName) {
+        String directory = (rawDirectory != null && rawDirectory.startsWith("/"))
+                ? rawDirectory.substring(1)
+                : rawDirectory;
+
+        if (directory == null || directory.isEmpty() || ".".equals(directory)) {
+            return fileName;
+        }
+        return directory + "/" + fileName;
+    }
+
+    /**
+     * Extracts 'jf.origin.remote.path' property embedded in AqlItem.
+     *
+     * @param item the AQL item to read the origin url from
+     * @return the extracted property value or {@code null} in case the property is absent or empty
+     */
+    private String extractOriginUrl(AqlItem item) {
+        if (item.getProperties() == null) {
+            return null;
+        }
+        return item.getProperties().stream()
+                .filter(p -> "jf.origin.remote.path".equals(p.getkey()))
+                .map(AqlItem.Property::getValue)
+                .filter(v -> v != null && !v.isEmpty())
+                .findFirst()
+                .orElse(null);
     }
 
     public boolean isActive() {
