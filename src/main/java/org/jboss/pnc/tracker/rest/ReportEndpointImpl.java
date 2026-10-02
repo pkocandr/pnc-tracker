@@ -41,6 +41,7 @@ public class ReportEndpointImpl implements ReportEndpoint {
     ReportService reportService;
 
     @Override
+    @RolesAllowed({"pnc-app-tracker-user", "pnc-users", "pnc-users-admin"})
     public List<String> getAllIds(String strState) {
         DbTrackingReportState state = getRequiredState(strState);
         List<String> ids = reportService.getTrackingIds(state);
@@ -119,6 +120,7 @@ public class ReportEndpointImpl implements ReportEndpoint {
     }
 
     @Override
+    @RolesAllowed({"pnc-app-tracker-user", "pnc-users", "pnc-users-admin"})
     public TrackingReport getReport(String trackingId) {
         DbTrackingReport report = reportService.getReport(trackingId);
 
@@ -184,6 +186,7 @@ public class ReportEndpointImpl implements ReportEndpoint {
     }
 
     @Override
+    @RolesAllowed({"pnc-app-tracker-user", "pnc-users", "pnc-users-admin"})
     public List<String> getUploadPaths(String trackingId) {
         DbTrackingReport report = reportService.getReport(trackingId);
 
