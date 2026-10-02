@@ -68,7 +68,7 @@ public class ReportEndpointImpl implements ReportEndpoint {
     }
 
     @Override
-    @RolesAllowed({"pnc-app-tracker-report-init", "pnc-users-admin"})
+    @RolesAllowed({"pnc-app-tracker-report-admin", "pnc-users-admin"})
     public void initReport(final String trackingId) {
         reportService.initReport(trackingId);
     }
@@ -113,7 +113,7 @@ public class ReportEndpointImpl implements ReportEndpoint {
     }
 
     @Override
-    @RolesAllowed({"pnc-app-tracker-report-seal", "pnc-users-admin"})
+    @RolesAllowed({"pnc-app-tracker-report-admin", "pnc-users-admin"})
     public void sealReport(String trackingId) {
         reportService.sealReport(trackingId);
     }
@@ -200,7 +200,7 @@ public class ReportEndpointImpl implements ReportEndpoint {
     }
 
     @Override
-    @RolesAllowed({"pnc-app-tracker-report-clean", "pnc-users-admin"})
+    @RolesAllowed({"pnc-app-tracker-report-clear", "pnc-users-admin"})
     public void clearReport(final String trackingId) {
         reportService.clearReport(trackingId);
     }
